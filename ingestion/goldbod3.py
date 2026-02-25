@@ -3,15 +3,29 @@ import pyodbc
 import pandas as pd
 from datetime import datetime, timedelta, timezone
 
-SERVER = r"DESKTOP-F3EJ92V\SQLEXPRESS"
-DATABASE = "CommoditiesDB"
+# -----------------------------------
+# Load environment configuration
+# -----------------------------------
+from dotenv import load_dotenv
+import os
+
+load_dotenv("config/.env")
+
+SERVER = os.getenv("DB_SERVER")
+DATABASE = os.getenv("DB_DATABASE")
+
 TABLE = "gold_prices_usd"
+
+# Validation: fail fast if config missing
+if not SERVER or not DATABASE:
+    raise RuntimeError("Database configuration missing. Check config/.env")
 
 OUNCES_PER_POUND = 14.5833
 
 # GoldBod policy factors (can be adjusted later)
 PURITY_FACTOR = 0.92
 POLICY_MARGIN = 1.015
+
 
 # -----------------------------------
 # Database helpers
@@ -22,6 +36,7 @@ def get_conn():
         f"SERVER={SERVER};DATABASE={DATABASE};Trusted_Connection=yes;"
     )
 
+
 def get_last_loaded_date():
     conn = get_conn()
     cur = conn.cursor()
@@ -30,11 +45,13 @@ def get_last_loaded_date():
     conn.close()
     return row[0]
 
+
 # -----------------------------------
 # Step 1: Incremental fetch
 # -----------------------------------
 def fetch_gold_history(start_date):
-    ticker = yf.Ticker("GLD")  # Most stable proxy
+    ticker = yf.Ticker("GLD")  # Proxy for gold spot
+
     df = ticker.history(
         start=start_date,
         end=datetime.now(timezone.utc).date() + timedelta(days=1),
@@ -47,7 +64,7 @@ def fetch_gold_history(start_date):
     df = df[["Close"]].dropna()
     df.rename(columns={"Close": "usd_spot_oz"}, inplace=True)
 
-    # GLD ≈ 1/10 oz
+    # GLD ≈ 1/10 oz proxy adjustment
     df["usd_spot_oz"] *= 10
 
     df.reset_index(inplace=True)
@@ -55,16 +72,20 @@ def fetch_gold_history(start_date):
 
     return df
 
+
 # -----------------------------------
 # Step 2: Validation & outlier detection
 # -----------------------------------
 def validate_prices(df):
     df["pct_change"] = df["usd_spot_oz"].pct_change()
+
     df["is_flagged"] = (
         (df["usd_spot_oz"] <= 0) |
         (df["pct_change"].abs() > 0.10)
     )
+
     return df
+
 
 # -----------------------------------
 # Step 3: GoldBod pricing layer
@@ -79,6 +100,7 @@ def apply_goldbod_pricing(df):
     ).round(2)
 
     return df
+
 
 # -----------------------------------
 # Persist incrementally
@@ -96,18 +118,24 @@ def store_incremental(df):
             (price_date, usd_spot_oz, usd_goldbod_oz, usd_goldbod_lb, source, is_flagged)
             VALUES (?, ?, ?, ?, ?, ?)
         """,
-        r["Date"], r["Date"], r["usd_spot_oz"],
-        r["usd_goldbod_oz"], r["usd_goldbod_lb"],
-        "GLD", int(r["is_flagged"])
+        r["Date"],
+        r["Date"],
+        r["usd_spot_oz"],
+        r["usd_goldbod_oz"],
+        r["usd_goldbod_lb"],
+        "GLD",
+        int(r["is_flagged"])
         )
 
     conn.commit()
     conn.close()
 
+
 # -----------------------------------
 # Main execution
 # -----------------------------------
 if __name__ == "__main__":
+
     last_date = get_last_loaded_date()
 
     if last_date is None:
@@ -123,6 +151,3 @@ if __name__ == "__main__":
     store_incremental(df)
 
     print("Gold price pipeline completed successfully.")
-
-
-

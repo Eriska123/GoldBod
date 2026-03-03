@@ -2,30 +2,24 @@ import yfinance as yf
 import pyodbc
 import pandas as pd
 from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
+import os
 
 # -----------------------------------
 # Load environment configuration
 # -----------------------------------
-from dotenv import load_dotenv
-import os
-
 load_dotenv("config/.env")
 
 SERVER = os.getenv("DB_SERVER")
 DATABASE = os.getenv("DB_DATABASE")
-
 TABLE = "gold_prices_usd"
 
-# Validation: fail fast if config missing
 if not SERVER or not DATABASE:
     raise RuntimeError("Database configuration missing. Check config/.env")
 
 OUNCES_PER_POUND = 14.5833
-
-# GoldBod policy factors (can be adjusted later)
 PURITY_FACTOR = 0.92
 POLICY_MARGIN = 1.015
-
 
 # -----------------------------------
 # Database helpers
@@ -36,22 +30,19 @@ def get_conn():
         f"SERVER={SERVER};DATABASE={DATABASE};Trusted_Connection=yes;"
     )
 
-
 def get_last_loaded_date():
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(f"SELECT MAX(price_date) FROM {TABLE}")
+    cur.execute(f"SELECT MAX(price_date) FROM dbo.{TABLE}")
     row = cur.fetchone()
     conn.close()
     return row[0]
-
 
 # -----------------------------------
 # Step 1: Incremental fetch
 # -----------------------------------
 def fetch_gold_history(start_date):
-    ticker = yf.Ticker("GLD")  # Proxy for gold spot
-
+    ticker = yf.Ticker("GLD")
     df = ticker.history(
         start=start_date,
         end=datetime.now(timezone.utc).date() + timedelta(days=1),
@@ -59,51 +50,37 @@ def fetch_gold_history(start_date):
     )
 
     if df.empty:
-        raise RuntimeError("No gold data returned")
+        print(f"No new gold data returned from Yahoo Finance for start_date = {start_date}")
+        return None
 
     df = df[["Close"]].dropna()
     df.rename(columns={"Close": "usd_spot_oz"}, inplace=True)
-
-    # GLD ≈ 1/10 oz proxy adjustment
-    df["usd_spot_oz"] *= 10
-
+    df["usd_spot_oz"] *= 10  # GLD ≈ 1/10 oz
     df.reset_index(inplace=True)
     df["Date"] = df["Date"].dt.date
-
     return df
-
 
 # -----------------------------------
 # Step 2: Validation & outlier detection
 # -----------------------------------
 def validate_prices(df):
     df["pct_change"] = df["usd_spot_oz"].pct_change()
-
     df["is_flagged"] = (
         (df["usd_spot_oz"] <= 0) |
         (df["pct_change"].abs() > 0.10)
     )
-
     return df
-
 
 # -----------------------------------
 # Step 3: GoldBod pricing layer
 # -----------------------------------
 def apply_goldbod_pricing(df):
-    df["usd_goldbod_oz"] = (
-        df["usd_spot_oz"] * PURITY_FACTOR * POLICY_MARGIN
-    ).round(2)
-
-    df["usd_goldbod_lb"] = (
-        df["usd_goldbod_oz"] * OUNCES_PER_POUND
-    ).round(2)
-
+    df["usd_goldbod_oz"] = (df["usd_spot_oz"] * PURITY_FACTOR * POLICY_MARGIN).round(2)
+    df["usd_goldbod_lb"] = (df["usd_goldbod_oz"] * OUNCES_PER_POUND).round(2)
     return df
 
-
 # -----------------------------------
-# Persist incrementally
+# Step 4: Persist incrementally
 # -----------------------------------
 def store_incremental(df):
     conn = get_conn()
@@ -140,16 +117,22 @@ if __name__ == "__main__":
 
     last_date = get_last_loaded_date()
 
+    # If no data exists yet, start from 2025-01-01
     if last_date is None:
         start_date = datetime(2025, 1, 1).date()
     else:
+        # Start from the day after the last loaded date
         start_date = last_date + timedelta(days=1)
 
     print(f"Loading gold prices from {start_date}")
 
     df = fetch_gold_history(start_date)
-    df = validate_prices(df)
-    df = apply_goldbod_pricing(df)
-    store_incremental(df)
 
-    print("Gold price pipeline completed successfully.")
+    if df is None:
+        print("No new records to process. Pipeline completed gracefully.")
+    else:
+        df = validate_prices(df)
+        df = apply_goldbod_pricing(df)
+        store_incremental(df)
+        print(f"{len(df)} new record(s) inserted into {TABLE}.")
+        print("Gold price pipeline completed successfully.")

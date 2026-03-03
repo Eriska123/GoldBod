@@ -109,27 +109,29 @@ def store_incremental(df):
     conn = get_conn()
     cur = conn.cursor()
 
+    insert_sql = f"""
+        IF NOT EXISTS (
+            SELECT 1 FROM dbo.{TABLE} WHERE price_date = ?
+        )
+        INSERT INTO dbo.{TABLE}
+        (price_date, usd_spot_oz, usd_goldbod_oz, usd_goldbod_lb, source, is_flagged)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """
+
     for _, r in df.iterrows():
-        cur.execute(f"""
-            IF NOT EXISTS (
-                SELECT 1 FROM {TABLE} WHERE price_date = ?
-            )
-            INSERT INTO {TABLE}
-            (price_date, usd_spot_oz, usd_goldbod_oz, usd_goldbod_lb, source, is_flagged)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        r["Date"],
-        r["Date"],
-        r["usd_spot_oz"],
-        r["usd_goldbod_oz"],
-        r["usd_goldbod_lb"],
-        "GLD",
-        int(r["is_flagged"])
+        cur.execute(
+            insert_sql,
+            r["Date"],
+            r["Date"],
+            float(r["usd_spot_oz"]),
+            float(r["usd_goldbod_oz"]),
+            float(r["usd_goldbod_lb"]),
+            "GLD",
+            int(r["is_flagged"])
         )
 
     conn.commit()
     conn.close()
-
 
 # -----------------------------------
 # Main execution

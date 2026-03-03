@@ -34,26 +34,22 @@ def load_data():
         f"SERVER={SERVER};DATABASE={DATABASE};Trusted_Connection=yes;"
     )
 
-    df = pd.read_sql(f"""
-        SELECT
-            price_date,
-            usd_spot_oz,
-            usd_goldbod_oz,
-            is_flagged
-        FROM {TABLE}
-        ORDER BY price_date
-    """, conn)
+    query = """
+    SELECT price_date,
+           usd_spot_oz,
+           usd_goldbod_oz,
+           usd_goldbod_lb,
+           is_flagged
+    FROM dbo.gold_prices_usd
+    ORDER BY price_date
+    """
+
+    df = pd.read_sql_query(query, conn)
 
     conn.close()
 
     df["price_date"] = pd.to_datetime(df["price_date"])
     return df
-
-df = load_data()
-
-if df.empty:
-    st.warning("No data available.")
-    st.stop()
 
 # =====================================================
 # DATE FILTER SLIDER (NEW)

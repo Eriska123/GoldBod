@@ -26,3 +26,11 @@ BEGIN
 END
 GO
 
+USE CommoditiesDB;
+GO
+
+USE CommoditiesDB;
+GO
+
+
+
